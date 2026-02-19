@@ -135,6 +135,7 @@ class MultiFrameCRNN(nn.Module):
         # ── Main head ────────────────────────────────────────────
         main_out = self.head(t_out).log_softmax(2)        # [B, W', C]
 
-        if self.training:
-            return main_out, aux_out
+        # Lưu aux_out vào attribute để trainer lấy nếu cần
+        # Luôn trả về 1 tensor để tương thích trainer
+        self.aux_logits = aux_out
         return main_out
