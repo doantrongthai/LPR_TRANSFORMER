@@ -35,9 +35,12 @@ class MultiFrameCRNN(nn.Module):
         transformer_layers: int = 2,
         transformer_ff_dim: int = 1024,
         dropout: float = 0.1,
+        rnn_dropout: float = None,   # alias cho dropout, giữ tương thích config cũ
         use_stn: bool = True,
     ):
         super().__init__()
+        if rnn_dropout is not None:
+            dropout = rnn_dropout
         self.cnn_channels = 512
         self.hidden_size  = hidden_size
         self.use_stn      = use_stn
