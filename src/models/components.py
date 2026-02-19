@@ -192,3 +192,97 @@ class PositionalEncoding(nn.Module):
         """
         x = x + self.pe[:, :x.size(1), :]
         return self.dropout(x)
+    
+class TemporalTransformerFusion(nn.Module):
+    """
+    Temporal Transformer Fusion cho multi-frame features.
+
+    Thay vì weighted sum (Attention) hay concat (Concat),
+    coi 5 frame như 1 sequence và dùng Transformer học
+    mối quan hệ GIỮA các frame (frame nào bù frame nào).
+
+    Pipeline:
+        [B*F, C, 1, W'] 
+            → reshape [B, F, W', C]          # F frame, W' time steps, C channels
+            → + frame positional encoding    # biết frame nào là frame mấy
+            → TransformerEncoder             # self-attention across frames
+            → mean pooling over F            # gộp F frame thành 1
+            → [B, W', C]                     # đưa vào Spatial Transformer tiếp theo
+
+    Tại sao tốt hơn AttentionFusion:
+        - AttentionFusion: mỗi spatial position (W') quyết định độc lập
+          frame nào quan trọng → không share thông tin giữa positions
+        - TemporalTransformerFusion: self-attention toàn bộ F*W' tokens
+          → học được "frame 2 rõ bên trái, frame 4 rõ bên phải" → bù trừ tốt hơn
+    """
+    def __init__(
+        self,
+        channels: int,
+        num_frames: int = 5,
+        num_heads: int = 8,
+        num_layers: int = 2,
+        ff_dim: int = 1024,
+        dropout: float = 0.1,
+    ):
+        super().__init__()
+        self.num_frames = num_frames
+        self.channels = channels
+
+        # Frame positional encoding: phân biệt frame 1,2,3,4,5
+        # Khác với spatial positional encoding (theo W')
+        self.frame_pos_embedding = nn.Parameter(
+            torch.randn(1, num_frames, 1, channels) * 0.02
+        )
+
+        # Transformer Encoder xử lý sequence [F * W'] tokens
+        encoder_layer = nn.TransformerEncoderLayer(
+            d_model=channels,
+            nhead=num_heads,
+            dim_feedforward=ff_dim,
+            dropout=dropout,
+            activation='gelu',
+            batch_first=True,   # [B, Seq, C]
+            norm_first=True,    # Pre-LN ổn định hơn Post-LN
+        )
+        self.transformer = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=num_layers,
+        )
+
+        # Layer norm sau fusion
+        self.norm = nn.LayerNorm(channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: [B * F, C, 1, W'] — output từ ResNetFeatureExtractor
+        Returns:
+            [B, C, 1, W'] — fused feature map
+        """
+        total, c, h, w = x.size()                      # h=1 vì đã adaptive pool
+        B = total // self.num_frames
+        F = self.num_frames
+
+        # [B*F, C, 1, W'] → [B, F, W', C]
+        x = x.squeeze(2)                               # [B*F, C, W']
+        x = x.view(B, F, c, w)                        # [B, F, C, W']
+        x = x.permute(0, 1, 3, 2)                     # [B, F, W', C]
+
+        # Thêm frame positional encoding
+        # frame_pos_embedding: [1, F, 1, C] → broadcast sang [B, F, W', C]
+        x = x + self.frame_pos_embedding
+
+        # Flatten F và W' thành 1 sequence: [B, F*W', C]
+        x = x.reshape(B, F * w, c)
+
+        # Transformer: self-attention toàn bộ F*W' tokens
+        x = self.transformer(x)                        # [B, F*W', C]
+        x = self.norm(x)
+
+        # Reshape về [B, F, W', C] rồi mean pool theo F
+        x = x.view(B, F, w, c)
+        x = x.mean(dim=1)                              # [B, W', C]
+
+        # Trả về [B, C, 1, W'] để khớp với phần sau của ResTranOCR
+        x = x.permute(0, 2, 1).unsqueeze(2)           # [B, C, 1, W']
+        return x

@@ -2,7 +2,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from src.models.components import ResNetFeatureExtractor, AttentionFusion, PositionalEncoding, STNBlock
+from src.models.components import ResNetFeatureExtractor, TemporalTransformerFusion, PositionalEncoding, STNBlock
 
 class ResTranOCR(nn.Module):
     """
@@ -30,7 +30,7 @@ class ResTranOCR(nn.Module):
         self.backbone = ResNetFeatureExtractor(pretrained=False)
         
         # 3. Attention Fusion
-        self.fusion = AttentionFusion(channels=self.cnn_channels)
+        self.fusion = TemporalTransformerFusion(channels=self.cnn_channels)
         
         # 4. Transformer Encoder
         self.pos_encoder = PositionalEncoding(d_model=self.cnn_channels, dropout=dropout)
