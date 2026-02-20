@@ -9,7 +9,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from src.models.components import CrossAttentionFusion, EfficientNetBackbone, STNBlock
+from src.models.components import MambaFusion  # thêm import
 
 
 class MultiFrameCRNN(nn.Module):
@@ -53,11 +53,11 @@ class MultiFrameCRNN(nn.Module):
         self.backbone = EfficientNetBackbone(out_channels=self.cnn_channels)
 
         # ── 3. Fusion: frame-wise cross-attention ────────────────
-        self.fusion = CrossAttentionFusion(
+        self.fusion = MambaFusion(
             channels=self.cnn_channels,
             num_frames=self.NUM_FRAMES,
-            num_heads=4,
-            dropout=dropout,
+            d_state=16,
+            num_layers=2,
         )
 
         # ── 4a. GRU — local pattern ──────────────────────────────

@@ -313,3 +313,80 @@ class TemporalTransformerFusion(nn.Module):
         x = self.transformer(self.norm(x.reshape(B, F * w, c)))
         x = x.view(B, F, w, c).mean(dim=1)
         return x.permute(0, 2, 1).unsqueeze(2)
+from mamba_ssm import Mamba
+
+class MambaFusion(nn.Module):
+    """
+    Thay CrossAttentionFusion bằng Mamba SSM.
+
+    Pipeline:
+        [B*F, C, 1, W']
+            → reshape [B, F*W', C]   # flatten frames + width thành 1 sequence
+            → Mamba scan              # học temporal dependency qua 160 tokens
+            → reshape [B, F, W', C]
+            → mean over F             # aggregate frames
+            → [B, C, 1, W']
+    
+    Install: pip install mamba-ssm causal-conv1d
+    Chỉ chạy trên CUDA.
+    """
+    def __init__(
+        self,
+        channels: int,
+        num_frames: int = 5,
+        d_state: int = 16,    # SSM state size — tăng lên 32 nếu muốn nhớ context dài hơn
+        d_conv: int = 4,      # local conv width bên trong Mamba
+        expand: int = 2,      # inner dim = channels * expand
+        num_layers: int = 2,  # stack nhiều Mamba block
+    ):
+        super().__init__()
+        self.num_frames = num_frames
+        self.channels   = channels
+
+        # Frame positional embedding — giúp Mamba biết token nào thuộc frame nào
+        self.frame_pos = nn.Parameter(
+            torch.randn(1, num_frames, 1, channels) * 0.02
+        )
+
+        # Stack num_layers Mamba blocks
+        self.mamba_layers = nn.ModuleList([
+            Mamba(
+                d_model=channels,
+                d_state=d_state,
+                d_conv=d_conv,
+                expand=expand,
+            )
+            for _ in range(num_layers)
+        ])
+
+        self.norm = nn.LayerNorm(channels)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Args:
+            x: [B*F, C, 1, W']
+        Returns:
+            [B, C, 1, W']
+        """
+        total, c, h, w = x.size()
+        B = total // self.num_frames
+        F = self.num_frames
+
+        # [B*F, C, 1, W'] → [B, F, W', C]
+        x = x.squeeze(2).view(B, F, c, w).permute(0, 1, 3, 2)
+
+        # Thêm frame positional embedding
+        x = x + self.frame_pos                     # [B, F, W', C]
+
+        # Flatten → [B, F*W', C] cho Mamba
+        x = x.reshape(B, F * w, c)
+
+        # Mamba scan
+        for mamba in self.mamba_layers:
+            x = x + mamba(self.norm(x))            # residual connection
+
+        # Reshape về [B, F, W', C] rồi mean over F
+        x = x.view(B, F, w, c).mean(dim=1)        # [B, W', C]
+
+        # [B, W', C] → [B, C, 1, W']
+        return x.permute(0, 2, 1).unsqueeze(2)
